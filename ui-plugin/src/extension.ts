@@ -1,26 +1,159 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+  // 1. Register the Webview Provider (Sidebar)
+  const provider = new UXVisionProvider(context.extensionUri);
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "ui-plugin" is now active!');
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("uxVisionView", provider)
+  );
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('ui-plugin.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from ui-plugin!');
-	});
-
-	context.subscriptions.push(disposable);
+  // 2. Command to apply code fixes (called from React UI)
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ux-vision.applyFix", (code: string) => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor) {
+        editor.edit((editBuilder) => {
+          // This is a simple implementation; ideally, you'd use a diffing tool
+          const lastLine = editor.document.lineAt(
+            editor.document.lineCount - 1
+          );
+          const range = new vscode.Range(
+            new vscode.Position(0, 0),
+            lastLine.range.end
+          );
+          editBuilder.replace(range, code);
+        });
+        vscode.window.showInformationMessage("Fix applied successfully!");
+      }
+    })
+  );
 }
 
-// This method is called when your extension is deactivated
-export function deactivate() {}
+class UXVisionProvider implements vscode.WebviewViewProvider {
+  constructor(private readonly _extensionUri: vscode.Uri) {}
+
+  public resolveWebviewView(
+    webviewView: vscode.WebviewView,
+    _context: vscode.WebviewViewResolveContext,
+    _token: vscode.CancellationToken
+  ) {
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri],
+    };
+
+    webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+
+    // Handle messages from the React UI
+    webviewView.webview.onDidReceiveMessage(async (message) => {
+      switch (message.command) {
+        case "analyze-ui":
+          await this.handleAnalysis(message.imageData, webviewView);
+          break;
+        case "apply-fix":
+          vscode.commands.executeCommand("ux-vision.applyFix", message.code);
+          break;
+      }
+    });
+  }
+
+  private async handleAnalysis(
+    base64Image: string,
+    webviewView: vscode.WebviewView
+  ) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      webviewView.webview.postMessage({
+        command: "analysis-result",
+        text: "Error: Open a code file first.",
+      });
+      return;
+    }
+
+    const sourceCode = editor.document.getText();
+
+    try {
+      // Select a vision-capable AI model
+      const [model] = await vscode.lm.selectChatModels({ family: "gpt-4o" });
+
+      if (!model) {
+        throw new Error("No compatible AI model found.");
+      }
+
+      const systemPrompt = `You are a Senior UX QA. Compare the screenshot with the source code. 
+            Identify discrepancies in layout, colors, or fonts.
+            Return ONLY a JSON array of objects with: 
+            "issue", "severity" (High/Medium/Low), "currentCode", and "suggestedFix".`;
+
+      const userMessage = vscode.LanguageModelChatMessage.User([
+        new vscode.LanguageModelTextPart(systemPrompt),
+        // We use 'as any' only if your @types are lagging behind your VS Code version
+        new (vscode as any).LanguageModelImagePart(
+          Buffer.from(base64Image.split(",")[1], "base64"),
+          "image/png"
+        ),
+        new vscode.LanguageModelTextPart(`CODE:\n${editor.document.getText()}`),
+      ]);
+
+      const response = await model.sendRequest([userMessage]);
+      let resultText = "";
+
+      for await (const fragment of response.text) {
+        resultText += fragment;
+      }
+
+      // Send structured JSON back to React
+      webviewView.webview.postMessage({
+        command: "analysis-result",
+        text: resultText,
+      });
+    } catch (err: any) {
+      vscode.window.showErrorMessage("Analysis failed: " + err.message);
+      webviewView.webview.postMessage({
+        command: "analysis-result",
+        text: "[]",
+      });
+    }
+  }
+
+  private _getHtmlForWebview(webview: vscode.Webview) {
+    // Path to the bundled Vite/React output
+    const scriptUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(
+        this._extensionUri,
+        "webview",
+        "dist",
+        "assets",
+        "main.js"
+      )
+    );
+
+    // Native VS Code Styles
+    const styleUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(
+        this._extensionUri,
+        "webview",
+        "dist",
+        "assets",
+		"webview.js",
+        "main.css"
+      )
+    );
+
+
+    return `<!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <link href="${styleUri}" rel="stylesheet">
+                <title>UX Vision</title>
+            </head>
+            <body>
+                <div id="root"></div>
+                <script type="module" src="${scriptUri}"></script>
+            </body>
+            </html>`;
+  }
+}

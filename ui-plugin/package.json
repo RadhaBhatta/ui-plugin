@@ -4,20 +4,34 @@
   "description": "ui-plugin",
   "version": "0.0.1",
   "engines": {
-    "vscode": "^1.109.0"
+    "vscode": "^1.80.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:uxVisionView"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "ui-plugin.helloWorld",
-        "title": "Hello World"
-      }
-    ]
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ux-vision-explorer",
+          "title": "UX-Vision",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ux-vision-explorer": [
+        {
+          "type": "webview",
+          "id": "uxVisionView",
+          "name": "Inspector"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
